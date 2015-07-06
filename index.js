@@ -16,9 +16,9 @@ var world = {
 };
 
 for (var i = 0; i<world.maxfeed; i++) {
-	addFood();
+	addFood(true);
 }
-function addFood(emit) {
+function addFood(doNotEmit) {
 	feed[foodAutoincrement] = {
 		id: foodAutoincrement,
 		x: Math.random() * world.width,
@@ -26,11 +26,12 @@ function addFood(emit) {
 		mass: 5,
 		size: Math.sqrt(5 / Math.PI) * 10
 	};
-	foodAutoincrement = i + 1;
 
-	if(!emit){
-
+	if (!doNotEmit) {
+		io.in('players').emit('food_create', feed[foodAutoincrement]);
 	}
+
+	foodAutoincrement += 1;
 }
 
 function distanceBewteen(o1, o2) {
@@ -47,6 +48,12 @@ function getRandColor(brightness) {
 }
 
 function createBubble(socket) {
+	var name;
+	if(socket.infoData.name){
+		name = socket.infoData.name;
+	} else {
+		name = 'Player ' + playerAutoincrement;
+	}
 	var bubble = {
 		id: socket.id,
 		x: Math.random() * world.width,
@@ -54,19 +61,16 @@ function createBubble(socket) {
 		mass: 50,
 		size: Math.sqrt(50 / Math.PI) * 10,
 		speedModifier: 1.0,
-		name: 'Player '+ playerAutoincrement,
+		name: name,
 		color: getRandColor(0),
-		rotation: 0
+		rotation: 0,
+		dead: false
 	};
+	playerAutoincrement += 1;
 
 	bubbles[socket.id] = bubble;
 
-	socket.emit('init', {
-		world: world,
-		bubble: bubble,
-		feed: feed,
-		bubbles: bubbles
-	});
+	return bubble;
 }
 
 function checkFoodColisions(self) {
@@ -88,11 +92,69 @@ function checkFoodColisions(self) {
 }
 
 
-io.on('connection', function (socket) {
-	createBubble(socket);
-	playerAutoincrement += 1;
+function checkPlayerColisions(self) {
+	for (var enemyKey in bubbles) {
 
-	io.in('players').emit('bubble_create', bubbles[socket.id]);
+		if (self.dead) {
+			return;
+		}
+
+		if (bubbles.hasOwnProperty(enemyKey)) {
+			if (enemyKey == self.id) {
+				continue;
+			}
+			var enemy = bubbles[enemyKey];
+
+			if(enemy.dead){
+				continue;
+			}
+
+			var dist = self.size + enemy.size;
+			if (dist/2>distanceBewteen(self, enemy)) {
+				var massDiff = enemy.mass - self.mass;
+				if (massDiff>10) {
+					var eater = enemy;
+					var eaten = self;
+				} else if (massDiff < -10) {
+					var eater = self;
+					var eaten = enemy;
+				} else {
+					continue;
+				}
+
+				eaten.dead = true;
+				eater.mass += eaten.mass;
+				eater.size = Math.sqrt(eater.mass / Math.PI) * 10;
+
+
+				io.in('players').emit('bubble_update', eaten);
+				io.in('players').emit('bubble_update', eater);
+
+				if(self.dead){
+					return;
+				}
+			}
+		}
+	}
+}
+
+io.on('connection', function (socket) {
+
+	socket.on('play', function(data){
+		socket.infoData = data;
+		var bubble = createBubble(socket);
+
+		socket.emit('play', {
+			bubble: bubble
+		});
+		io.in('players').emit('bubble_create', bubbles[socket.id]);
+	});
+
+	socket.emit('init', {
+		world: world,
+		feed: feed,
+		bubbles: bubbles
+	});
 
 	socket.join('players');
 
@@ -103,14 +165,17 @@ io.on('connection', function (socket) {
 		bubbles[this.id].rotation = data.rotation;
 
 		var self = bubbles[this.id];
-		checkFoodColisions(self);
+		if(!self.dead){
+			checkFoodColisions(self);
+			checkPlayerColisions(self);
+			io.in('players').emit('bubble_update', bubbles[this.id]);
+		}
 
-		io.in('players').emit('bubble_update', bubbles[this.id]);
 
 	});
 
 
-	socket.on('disconnect', function(e){
+	socket.on('disconnect', function (e) {
 		io.in('players').emit('bubble_remove', bubbles[this.id]);
 		delete bubbles[this.id];
 	})
